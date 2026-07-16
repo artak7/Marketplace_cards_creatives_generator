@@ -1,5 +1,6 @@
 import platform
 from PIL import Image, ImageDraw, ImageFont
+import os
 
 class ImageService:
     """Combines backgrounds, templates, prints, and custom dynamic infobox badges."""
@@ -56,15 +57,30 @@ class ImageService:
             color = badge["color"]
             
             # Dynamic horizontal scale based on length of the label text
-            calculated_width = int(len(text) * (font_size * 0.6) + 50)
+            # calculated_width = int(len(text) * (font_size * 0.6) + 50)
+
+            try:
+                text_width = int(font.getlength(text))
+            except AttributeError:
+                # Более старый способ замера текста через draw.textbbox
+                _, _, text_width, _ = draw.textbbox((0, 0), text, font=font)
+            
+            # Добавляем щедрый отступ (padding) слева и справа (например, по 30 пикселей с каждого края)
+            side_padding = 60 
+            calculated_width = text_width + side_padding
             
             draw.rounded_rectangle(
                 [padding_x, current_y, padding_x + calculated_width, current_y + badge_h],
                 radius=15,
                 fill=color
             )
+
+            # Центрируем текст внутри плашки по горизонтали с учетом наших отступов
+            text_x = padding_x + (side_padding // 2)
+            text_y = current_y + int(badge_h * 0.18)
+
             draw.text(
-                (padding_x + 25, current_y + int(badge_h * 0.18)),
+                (text_x, text_y),
                 text,
                 fill="white",
                 font=font
@@ -75,10 +91,36 @@ class ImageService:
 
     @staticmethod
     def _load_system_font(font_size: int) -> ImageFont.FreeTypeFont:
-        """Helper to get a reliable standard OS sans font."""
+        """Безопасно загружает локальный шрифт с поддержкой кириллицы."""
+        # Путь к нашему красивому шрифту внутри проекта
+        local_font_path = os.path.join("assets", "Montserrat-Bold.ttf")
+        
+        # 1. Пробуем загрузить наш красивый локальный шрифт
+        if os.path.exists(local_font_path):
+            try:
+                return ImageFont.truetype(local_font_path, font_size)
+            except Exception:
+                pass
+        
+        # 2. Если локального файла нет, пробуем стандартные системные пути
+        import platform
+        system = platform.system()
         try:
-            if platform.system() == "Windows":
+            if system == "Windows":
                 return ImageFont.truetype("arial.ttf", font_size)
-            return ImageFont.truetype("/Library/Fonts/Arial.ttf", font_size)
-        except IOError:
-            return ImageFont.load_default()
+            elif system == "Darwin":  # macOS
+                return ImageFont.truetype("/Library/Fonts/Arial.ttf", font_size)
+            else:  # Linux (Streamlit Cloud)
+                # Пытаемся найти стандартный Linux-шрифт с поддержкой кириллицы
+                linux_fonts = [
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+                ]
+                for path in linux_fonts:
+                    if os.path.exists(path):
+                        return ImageFont.truetype(path, font_size)
+        except Exception:
+            pass
+
+        # 3. Крайний случай (может не поддерживать кириллицу, но спасёт от падения)
+        return ImageFont.load_default()

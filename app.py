@@ -18,7 +18,7 @@ s3_service = S3Service(
 # Page setups
 st.set_page_config(page_title="Генератор карточек одежды", layout="wide")
 st.title("🎨 Генератор карточек одежды для WB")
-st.caption("Рефакторинг на основе SOLID / DRY / KISS")
+# st.caption("Рефакторинг на основе SOLID / DRY / KISS")
 
 # State setups
 for key, default in [
@@ -74,7 +74,7 @@ if st.button("🚀 Создать принт и карточку"):
                 print_img = ai_service.generate_print_image(user_prompt)
                 
                 # 2. Mockup composition
-                mockup = ImageService.create_mockup("tshirt_base.png", print_img)
+                mockup = ImageService.create_mockup("tshirt_base_grey.png", print_img)
                 st.session_state.clean_mockup = mockup
                 
                 # 3. Apply infographic labels
@@ -100,32 +100,65 @@ if "final_card" in st.session_state and st.session_state.final_card:
     st.markdown("---")
     st.subheader("📦 Автоматическая выгрузка на Wildberries")
     
+    # Защита: проверяем, инициализирован ли s3_service
+    # Если s3_service — это None или не настроен, кнопка должна быть заблокирована
+    s3_ready = s3_service is not None
+    
     wb_token = st.text_input("Введите ваш токен WB API:", type="password")
     vendor_code = st.text_input("Артикул товара (Vendor Code):", value="tshirt_ai_001")
     
-    if st.button("📤 Создать карточку и загрузить на WB"):
+    # Две новые переменные, которых не было в локальном scope шага 5:
+    # Убедитесь, что user_title и user_description объявлены выше в вашем коде
+    user_title = st.session_state.get("wb_title", "Название товара")
+    user_description = st.session_state.get("wb_description", "Описание товара")
+    
+    if st.button("📤 Создать карточку и загрузить на WB", disabled=not s3_ready):
         if not wb_token:
-            st.warning("Пожалуйста, укажите токен.")
+            st.warning("Пожалуйста, укажите токен ВБ API.")
         else:
+            # Создается пустое черное текстовое окошко на экране
+            log_container = st.code("Система запущена...\n", language="text")
+            st.session_state["debug_logs"] = "" # Сброс логов
+
+            def add_log(text: str, container=log_container):
+                """Берет старый текст, добавляет к нему новую строчку и обновляет окошко на экране"""
+                st.session_state["debug_logs"] = st.session_state.get("debug_logs", "") + text + "\n"
+                container.code(st.session_state["debug_logs"], language="text")
+
             with st.spinner("Загрузка в облако и создание карточки WB..."):
                 try:
-                    # Upload to S3
+                    # 1. Загрузка в приватный S3 (получаем подписанную ссылку)
                     filename = f"{vendor_code}.jpg"
                     img_url = s3_service.upload_image(st.session_state.final_card, filename)
                     
-                    # Register product code
-                    created = WildberriesService.create_card(wb_token, vendor_code, user_title, user_description)
+                    # 2. Создание карточки товара
+                    created, wb_response_text = WildberriesService.create_card(wb_token, vendor_code, user_title, user_description)
+                    
+                    add_log(f"Ответ от ВБ движком curl_cffi:\n{wb_response_text}")
+
                     if created:
-                        # Bind the S3 image link
+                        st.info("Номенклатура создается на серверах WB (это занимает до 1-2 минут)...")
+                        
+                        # 3. Передаем в link_media ссылку. 
+                        # Внутри link_media ВАЖНО сделать паузу/запрос nmId по vendor_code!
                         linked = WildberriesService.link_media(wb_token, vendor_code, img_url)
+                        
                         if linked:
-                            st.success(f"🎉 Карточка {vendor_code} успешно выгружена на WB!")
+                            st.success(f"🎉 Карточка {vendor_code} успешно выгружена на WB с фото!")
                         else:
-                            st.warning("Товар создан, но произошла ошибка прикрепления медиафайла.")
+                            st.warning(
+                                f"Товар создан! Но WB еще обрабатывает карточку. "
+                                f"Вы можете загрузить фото вручную по этой ссылке (действует 7 дней):\n\n"
+                                f"`{img_url}`"
+                            )
                     else:
-                        st.error("Ошибка при создании карточки в Wildberries API.")
+                        st.error("Ошибка при создании карточки в Wildberries API. Проверьте токен и формат данных.")
                 except Exception as e:
                     st.error(f"Ошибка экспорта: {e}")
+    
+    if not s3_ready:
+        st.error("⚠️ S3 Сервис не настроен. Проверьте переменные окружения в .env файле.")
+
 
     # Local file download alternative
     buffered = BytesIO()

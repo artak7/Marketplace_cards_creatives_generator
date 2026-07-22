@@ -1,50 +1,121 @@
+from curl_cffi import requests
 import time
-import requests
 
 class WildberriesService:
-    """Executes official requests onto Wildberries seller endpoint catalogs."""
-    
-    @staticmethod
-    def create_card(token: str, vendor_code: str, title: str, description: str) -> bool:
-        """Attempts to register a single fashion variant with WB API."""
-        headers = {
-            "Authorization": token,
-            "Content-Type": "application/json"
-        }
-        
-        payload = [{
-            "subjectID": 105, # T-Shirt category code
-            "variants": [{
-                "vendorCode": vendor_code,
-                "title": title,
-                "description": description,
-                "brand": "ИИ Тренды",
-                "dimensions": {"length": 40, "width": 30, "height": 2},
-                "characteristics": [
-                    {"Плотность": "180 г/кв.м"},
-                    {"Состав": "Хлопок 100%"}
-                ],
-                "sizes": [{"techSize": "42", "wbSize": "42"}]
-            }]
-        }]
-        
-        res = requests.post("https://wildberries.ru", json=payload, headers=headers, timeout=30)
-        return res.status_code in [200, 201]
+    """Выполняет официальные запросы к каталогу контента WB API с обходом антибота."""
 
-    @staticmethod
-    def link_media(token: str, vendor_code: str, image_url: str) -> bool:
-        """Links your public S3 image with an existing product listing."""
-        headers = {
-            "Authorization": token,
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "vendorCode": vendor_code,
-            "data": [image_url]
-        }
-        
-        # Artificial delay allowing WB servers to process the registration payload first
-        time.sleep(1)
-        res = requests.post("https://wildberries.ru", json=payload, headers=headers, timeout=30)
-        return res.status_code == 200
+    BASE_URL = "https://wildberries.ru"
+
+    @classmethod
+    def _get_headers(cls, token: str) -> dict:
+        """Формирует заголовки. Автоматически добавляет Bearer, если его забыли."""
+        clean_token = str(token).strip()
+        auth_token = (
+            clean_token
+            if clean_token.startswith("Bearer ")
+            else f"Bearer {clean_token}"
+        )
+        return {"Authorization": auth_token, "Content-Type": "application/json"}
+
+    @classmethod
+    def create_card(
+        cls, token: str, vendor_code: str, title: str, description: str
+    ) -> tuple[bool, str]:
+        """Создает черновик карточки товара. Возвращает (Успех, Текст_Ответа)."""
+        url = f"{cls.BASE_URL}/content/v2/cards/upload"
+        headers = cls._get_headers(token)
+
+        payload = [
+            {
+                "subjectID": 105,  # Футболки
+                "variants": [
+                    {
+                        "vendorCode": str(vendor_code),
+                        "title": str(title)[:60],
+                        "description": str(description)[:5000],
+                        "brand": "ИИ Тренды",
+                        "dimensions": {
+                            "length": 40,
+                            "width": 30,
+                            "height": 2,
+                        },
+                        "characteristics": [
+                            {"name": "Плотность", "value": ["180 г/кв.м"]},
+                            {"name": "Состав", "value": ["Хлопок 100%"]},
+                        ],
+                        "sizes": [{"techSize": "42", "wbSize": "42"}],
+                    }
+                ],
+            }
+        ]
+
+        try:
+            # Используем impersonate="chrome" для полной маскировки сетевого отпечатка
+            res = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                impersonate="chrome",
+                timeout=30,
+            )
+            is_success = res.status_code in (200, 201)
+            return is_success, res.text
+        except Exception as e:
+            return False, f"Исключение curl_cffi: {str(e)}"
+
+    @classmethod
+    def link_media(cls, token: str, vendor_code: str, image_url: str) -> bool:
+        """Опрашивает WB через скрытый браузерный запрос, ищет nmId и привязывает фото."""
+        headers = cls._get_headers(token)
+        nm_id = None
+
+        for _ in range(6):
+            time.sleep(15)
+            try:
+                list_url = f"{cls.BASE_URL}/content/v2/get/cards/list"
+                list_payload = {
+                    "settings": {
+                        "cursor": {"limit": 50},
+                        "filter": {"withError": False},
+                    }
+                }
+                # Маскируем запрос под Chrome
+                list_res = requests.post(
+                    list_url,
+                    json=list_payload,
+                    headers=headers,
+                    impersonate="chrome",
+                    timeout=30,
+                )
+
+                if list_res.status_code == 200:
+                    cards_data = (
+                        list_res.json().get("data", {}).get("cards", [])
+                    )
+                    for card in cards_data:
+                        if card.get("vendorCode") == vendor_code:
+                            nm_id = card.get("nmID")
+                            break
+                if nm_id:
+                    break
+            except Exception:
+                continue
+
+        if not nm_id:
+            return False
+
+        media_url = f"{cls.BASE_URL}/content/v3/media/save"
+        media_payload = {"nmId": int(nm_id), "data": [str(image_url)]}
+
+        try:
+            # Маскируем финальный запрос отправки фото под Chrome
+            media_res = requests.post(
+                media_url,
+                json=media_payload,
+                headers=headers,
+                impersonate="chrome",
+                timeout=30,
+            )
+            return media_res.status_code == 200
+        except Exception:
+            return False
